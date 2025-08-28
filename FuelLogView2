@@ -1,0 +1,103 @@
+// FuelLogView.swift
+import SwiftUI
+import CoreData
+
+struct FuelLogView: View {
+    @Environment(\.managedObjectContext) private var ctx
+    let car: Car
+
+    @FetchRequest private var items: FetchedResults<Expense>
+    @State private var showingAdd = false
+
+    init(car: Car) {
+        // Filter by car AND only expenses that have a linked FuelRecord
+        _items = FetchRequest<Expense>(
+            sortDescriptors: [NSSortDescriptor(key: "date", ascending: false)],
+            predicate: NSPredicate(format: "car == %@ AND fuel != nil", car)
+        )
+        self.car = car
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if items.isEmpty {
+                    ContentUnavailableView(
+                        "No fuel entries",
+                        systemImage: "fuelpump",
+                        description: Text("Tap + to add your first fill-up.")
+                    )
+                } else {
+                    List {
+                        // ✅ Key rows by objectID — no dynamic member key path
+                        ForEach(items, id: \.objectID) { exp in
+                            FuelRow(expense: exp)
+                                .listRowSeparator(.hidden)
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("Fuel Log")
+            .toolbar { Button { showingAdd = true } label: { Image(systemName: "plus") } }
+            .sheet(isPresented: $showingAdd) { AddFuelExpenseView(car: car) }
+        }
+    }
+}
+
+private struct FuelRow: View {
+    @ObservedObject var expense: Expense
+
+    var body: some View {
+        let gallons = expense.fuel?.gallons ?? 0
+        let ppg = expense.fuel?.pricePerGal?.doubleValue ?? 0
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(expense.date ?? Date(), style: .date).font(.headline)
+                Spacer()
+                if expense.mileage > 0 {
+                    Text("\(expense.mileage) mi").foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                // amount is Decimal (NSDecimalNumber?) in your model
+                Text(expense.amount?.money ?? 0.0.money)
+                    .font(.title3).bold()
+                Spacer()
+                Text(String(format: "%.2f gal · %.3f/gal", gallons, ppg))
+                    .foregroundStyle(.secondary)
+            }
+            if let mpg = mpg(for: expense) {
+                Text(String(format: "≈ %.1f mpg", mpg))
+                    .font(.subheadline)
+            }
+        }
+        .padding(16)
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(.separator), lineWidth: 0.5))
+        .shadow(radius: 1, y: 1)
+        .padding(.horizontal)
+    }
+
+    /// MPG = (current odometer - previous fuel expense odometer) / current gallons
+    private func mpg(for exp: Expense) -> Double? {
+        guard let ctx = exp.managedObjectContext,
+              let car = exp.car,
+              let date = exp.date,
+              exp.mileage > 0,
+              let gallons = exp.fuel?.gallons, gallons > 0 else { return nil }
+
+        let req: NSFetchRequest<Expense> = Expense.fetchRequest()
+        req.sortDescriptors = [NSSortDescriptor(key: "date", ascending: false)]
+        req.predicate = NSPredicate(format: "car == %@ AND fuel != nil AND date < %@", car, date as NSDate)
+        req.fetchLimit = 1
+
+        if let prev = try? ctx.fetch(req).first, prev?.mileage ?? 0 > 0 {
+            let miles = Double(exp.mileage - (prev!.mileage))
+            guard miles > 0 else { return nil }
+            return miles / gallons
+        }
+        return nil
+    }
+}
