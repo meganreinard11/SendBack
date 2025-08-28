@@ -1,0 +1,95 @@
+import SwiftUI
+import CoreData
+
+struct FuelLogView: View {
+    @Environment(\.managedObjectContext) private var ctx
+    let car: Car
+
+    // Fetch only expenses that have a linked fuel record
+    @FetchRequest private var items: FetchedResults<Expense>
+    @State private var showingAdd = false
+
+    init(car: Car) {
+        let pred = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            NSPredicate(format: "car == %@", car),
+            NSPredicate(format: "fuel != nil")
+        ])
+        _items = FetchRequest<Expense>(
+            sortDescriptors: [NSSortDescriptor(key: "date", ascending: false)],
+            predicate: pred
+        )
+        self.car = car
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(items) { exp in
+                    AppFuelCard(expense: exp)
+                        .listRowSeparator(.hidden)
+                }
+            }
+            .listStyle(.plain)
+            .navigationTitle("Fuel Log")
+            .toolbar { Button { showingAdd = true } label: { Image(systemName: "plus") } }
+            .sheet(isPresented: $showingAdd) { AddFuelExpenseView(car: car) }
+        }
+    }
+}
+
+private struct AppFuelCard: View {
+    @ObservedObject var expense: Expense
+    var body: some View {
+        let gallons = expense.fuel?.gallons ?? 0
+        let ppg = expense.fuel?.pricePerGalDouble ?? 0
+        let amount = expense.amount
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(expense.date ?? Date(), style: .date).font(.headline)
+                Spacer()
+                if expense.mileage > 0 { Text("\(expense.mileage) mi").foregroundStyle(.secondary) }
+            }
+            HStack {
+                Text(amount.money).font(.title3).bold()
+                Spacer()
+                Text(String(format: "%.2f gal · %.2f/gal", gallons, ppg))
+                    .foregroundStyle(.secondary)
+            }
+            if let mpg = mpgFor(expense: expense) {
+                Text(String(format: "≈ %.1f mpg", mpg)).font(.subheadline)
+            }
+        }
+        .padding(16)
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(.separator), lineWidth: 0.5))
+        .shadow(radius: 1, y: 1)
+        .padding(.horizontal)
+    }
+
+    // MPG = (delta mileage) / gallons, using previous fuel expense
+    private func mpgFor(expense: Expense) -> Double? {
+        guard let car = expense.car,
+              let date = expense.date,
+              expense.mileage > 0,
+              let gallons = expense.fuel?.gallons, gallons > 0 else { return nil }
+
+        let req: NSFetchRequest<Expense> = Expense.fetchRequest()
+        req.sortDescriptors = [NSSortDescriptor(key: "date", ascending: false)]
+        req.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            NSPredicate(format: "car == %@", car),
+            NSPredicate(format: "fuel != nil"),
+            NSPredicate(format: "date < %@", date as CVarArg)
+        ])
+        req.fetchLimit = 1
+
+        do {
+            let prev = try car.managedObjectContext?.fetch(req).first
+            if let prev, prev.mileage > 0 {
+                let miles = Double(expense.mileage - prev.mileage)
+                guard miles > 0 else { return nil }
+                return miles / gallons
+            }
+        } catch { }
+        return nil
+    }
+}
