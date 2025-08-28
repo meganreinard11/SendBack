@@ -1,154 +1,36 @@
 // Expense.swift
-// Manual/None Core Data class matching your .xcdatamodeld
-//
-// Expense
-//  - amount: Decimal (NSDecimalNumber?)
-//  - category: Int16
-//  - date: Date?
-//  - mileage: Int32
-//  - receipt: Data?
-// Relationships (to-one):
-//  - car: Car?
-//  - fuel: FuelRecord?
-//  - insurancePolicy: InsurancePolicy?
-//  - part: Part?
-//  - registration: CarRegistration?
-//  - serviceOperation: ServiceOperation?
-//  - title: CarTitle?
-//  - toll: TollRecord?          // include if you added TollRecord
-
 import Foundation
 import CoreData
 
 @objc(Expense)
-public class Expense: NSManagedObject {}
+public class Expense: NSManagedObject { }
 
 extension Expense {
     @nonobjc public class func fetchRequest() -> NSFetchRequest<Expense> {
         NSFetchRequest<Expense>(entityName: "Expense")
     }
 
-    // MARK: - Attributes
-    @NSManaged public var amount: NSDecimalNumber?   // Decimal in the model
-    @NSManaged public var category: Int16
-    @NSManaged public var date: Date?
+    // Base attributes (matches XML: abstract entity)
+    @NSManaged public var amount: NSDecimalNumber?        // Decimal
+    @NSManaged public var date: Date?                     // Date
+    @NSManaged public var id: UUID                        // UUID (required)
+    @NSManaged public var isReimbursable: Bool            // default NO
     @NSManaged public var mileage: Int32
-    @NSManaged public var receipt: Data?
+    @NSManaged public var notes: String?
 
-    // MARK: - Relationships
+    // Base relationships
     @NSManaged public var car: Car?
-    @NSManaged public var fuel: FuelRecord?
-    @NSManaged public var insurancePolicy: InsurancePolicy?
-    @NSManaged public var part: Part?
-    @NSManaged public var registration: CarRegistration?
-    @NSManaged public var serviceOperation: ServiceOperation?
-    @NSManaged public var title: CarTitle?
-    @NSManaged public var toll: TollRecord?          // comment out if you didn’t add TollRecord
+    @NSManaged public var claim: InsuranceClaim?
+    @NSManaged public var merchant: Merchant?
 }
 
-// Use objectID for identity by default; this also enables ForEach(..., id: \.objectID)
 extension Expense: Identifiable { }
 
-// MARK: - Convenience bridges & helpers
 public extension Expense {
-    /// Safe Decimal/Double bridges for UI & math
     var amountDecimal: Decimal { amount?.decimalValue ?? .zero }
     var amountDouble: Double { amount?.doubleValue ?? 0 }
-    var hasReceipt: Bool { (receipt?.isEmpty == false) }
-
-    /// Nice way to read/write the category with your enum
-    var kind: ExpenseCategory {
-        get { ExpenseCategory(rawValue: category) ?? ExpenseCategory.inferred(for: self) }
-        set { category = newValue.rawValue }
-    }
-
-    /// Currency string without needing a separate helper (optional)
     var amountFormatted: String {
-        let f = NumberFormatter()
-        f.numberStyle = .currency
-        f.maximumFractionDigits = 2
-        return amount.map { f.string(from: $0) ?? "$0.00" } ?? "$0.00"
-    }
-}
-
-// MARK: - Creation helpers (optional)
-public extension Expense {
-    /// Create a generic expense (no specialized record attached)
-    @discardableResult
-    static func insert(in ctx: NSManagedObjectContext,
-                       car: Car,
-                       date: Date,
-                       amount: Decimal,
-                       category: ExpenseCategory,
-                       mileage: Int? = nil,
-                       receiptData: Data? = nil) -> Expense {
-        let e = Expense(context: ctx)
-        e.car = car
-        e.date = date
-        e.amount = NSDecimalNumber(decimal: amount)
-        e.category = category.rawValue
-        e.mileage = Int32(mileage ?? 0)
-        e.receipt = receiptData
-        return e
-    }
-
-    /// Create a fuel expense and its FuelRecord in one shot
-    @discardableResult
-    static func insertFuel(in ctx: NSManagedObjectContext,
-                           car: Car,
-                           date: Date,
-                           mileage: Int? = nil,
-                           gallons: Decimal,
-                           pricePerGallon: Decimal,
-                           receiptData: Data? = nil) -> (expense: Expense, fuel: FuelRecord) {
-        let total = gallons * pricePerGallon
-
-        let e = Expense(context: ctx)
-        e.car = car
-        e.date = date
-        e.amount = NSDecimalNumber(decimal: total)
-        e.category = ExpenseCategory.fuel.rawValue
-        e.mileage = Int32(mileage ?? 0)
-        e.receipt = receiptData
-
-        let f = FuelRecord(context: ctx)
-        f.car = car
-        f.expense = e
-        f.gallons = NSDecimalNumber(decimal: gallons).doubleValue
-        f.pricePerGal = NSDecimalNumber(decimal: pricePerGallon)
-
-        return (e, f)
-    }
-
-    /// Create a toll expense and its TollRecord (requires TollRecord in your model)
-    @discardableResult
-    static func insertToll(in ctx: NSManagedObjectContext,
-                           car: Car,
-                           date: Date,
-                           amount: Decimal,
-                           road: String? = nil,
-                           entryPlaza: String? = nil,
-                           exitPlaza: String? = nil,
-                           tagId: String? = nil,
-                           axleCount: Int16 = 2,
-                           mileage: Int? = nil) -> (expense: Expense, toll: TollRecord)? {
-        // If TollRecord isn't compiled into the target, comment this whole method out.
-        let e = Expense(context: ctx)
-        e.car = car
-        e.date = date
-        e.amount = NSDecimalNumber(decimal: amount)
-        e.category = ExpenseCategory.tolls.rawValue
-        e.mileage = Int32(mileage ?? 0)
-
-        let t = TollRecord(context: ctx)
-        t.car = car
-        t.expense = e
-        t.road = road
-        t.entryPlaza = entryPlaza
-        t.exitPlaza = exitPlaza
-        t.tagId = tagId
-        t.axleCount = axleCount
-
-        return (e, t)
+        let f = NumberFormatter(); f.numberStyle = .currency; f.maximumFractionDigits = 2
+        return f.string(from: amount ?? 0) ?? "$0.00"
     }
 }
