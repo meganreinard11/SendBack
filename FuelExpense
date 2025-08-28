@@ -1,0 +1,265 @@
+// FuelExpense.swift
+import Foundation
+import CoreData
+
+@objc(FuelExpense)
+public class FuelExpense: Expense { }
+
+extension FuelExpense {
+    @nonobjc public class func fetchRequest() -> NSFetchRequest<FuelExpense> {
+        NSFetchRequest<FuelExpense>(entityName: "FuelExpense")
+    }
+
+    // Subclass attributes per XML
+    @NSManaged public var gallons: NSDecimalNumber?       // Decimal
+    @NSManaged public var unitPrice: NSDecimalNumber?     // Decimal
+}
+
+public extension FuelExpense {
+    var gallonsDec: Decimal { gallons?.decimalValue ?? .zero }
+    var unitPriceDec: Decimal { unitPrice?.decimalValue ?? .zero }
+    var computedTotal: Decimal { gallonsDec * unitPriceDec }
+}
+
+
+
+
+// Car.swift
+import Foundation
+import CoreData
+import SwiftUI
+
+@objc(Car)
+public class Car: NSManagedObject { }
+
+extension Car {
+    @nonobjc public class func fetchRequest() -> NSFetchRequest<Car> {
+        NSFetchRequest<Car>(entityName: "Car")
+    }
+
+    @NSManaged public var id: UUID
+    @NSManaged public var name: String
+    @NSManaged public var make: String
+    @NSManaged public var model: String
+    @NSManaged public var trim: String?
+    @NSManaged public var vin: String
+    @NSManaged public var year: String?
+    @NSManaged public var bodyStyle: String?
+    @NSManaged public var fuelType: String?
+    @NSManaged public var licensePlate: String?
+
+    // Relationships (minimal surface for our screens)
+    @NSManaged public var expenses: NSSet?        // Set<Expense>
+    @NSManaged public var mileageLogs: NSSet?     // Set<MileageLog>
+}
+
+extension Car: Identifiable {}
+
+public extension Car {
+    var displayTitle: String {
+        if !name.trimmingCharacters(in: .whitespaces).isEmpty { return name }
+        return "\(year ?? "") \(make) \(model) \(trim ?? "")".trimmingCharacters(in: .whitespaces)
+    }
+}
+
+
+
+// Merchant.swift
+import Foundation
+import CoreData
+
+@objc(Merchant)
+public class Merchant: NSManagedObject {}
+
+extension Merchant {
+    @nonobjc public class func fetchRequest() -> NSFetchRequest<Merchant> {
+        NSFetchRequest<Merchant>(entityName: "Merchant")
+    }
+
+    @NSManaged public var category: String
+    @NSManaged public var name: String?
+    @NSManaged public var phone: String?
+    @NSManaged public var notes: String?
+}
+
+
+// MileageLog.swift
+import Foundation
+import CoreData
+
+@objc(MileageLog)
+public class MileageLog: NSManagedObject {}
+
+extension MileageLog {
+    @nonobjc public class func fetchRequest() -> NSFetchRequest<MileageLog> {
+        NSFetchRequest<MileageLog>(entityName: "MileageLog")
+    }
+
+    @NSManaged public var id: UUID
+    @NSManaged public var date: Date?
+    @NSManaged public var odometer: Int32
+    @NSManaged public var car: Car?
+}
+
+
+// FuelLogView.swift
+import SwiftUI
+import CoreData
+
+struct FuelLogView: View {
+    @Environment(\.managedObjectContext) private var ctx
+    let car: Car
+
+    @FetchRequest private var items: FetchedResults<FuelExpense>
+    @State private var showingAdd = false
+
+    init(car: Car) {
+        _items = FetchRequest<FuelExpense>(
+            sortDescriptors: [NSSortDescriptor(key: "date", ascending: false)],
+            predicate: NSPredicate(format: "car == %@", car)
+        )
+        self.car = car
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if items.isEmpty {
+                    ContentUnavailableView("No fuel entries", systemImage: "fuelpump", description: Text("Tap + to add your first fill-up."))
+                } else {
+                    List {
+                        ForEach(items, id: \.objectID) { exp in
+                            FuelRow(expense: exp)
+                                .listRowSeparator(.hidden)
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("Fuel Log")
+            .toolbar { Button { showingAdd = true } label: { Image(systemName: "plus") } }
+            .sheet(isPresented: $showingAdd) { AddFuelExpenseView(car: car) }
+        }
+    }
+}
+
+private struct FuelRow: View {
+    @ObservedObject var expense: FuelExpense
+
+    var body: some View {
+        let total = expense.amount?.decimalValue ?? expense.computedTotal
+        let gallons = NSDecimalNumber(decimal: expense.gallonsDec).doubleValue
+        let ppg = NSDecimalNumber(decimal: expense.unitPriceDec).doubleValue
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(expense.date ?? Date(), style: .date).font(.headline)
+                Spacer()
+                if expense.mileage > 0 { Text("\(expense.mileage) mi").foregroundStyle(.secondary) }
+            }
+            HStack {
+                Text(total.money).font(.title3).bold()
+                Spacer()
+                Text(String(format: "%.2f gal · %.3f/gal", gallons, ppg))
+                    .foregroundStyle(.secondary)
+            }
+            if let mpg = mpg(for: expense, totalGallons: gallons) {
+                Text(String(format: "≈ %.1f mpg", mpg)).font(.subheadline)
+            }
+        }
+        .padding(16)
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(.separator), lineWidth: 0.5))
+        .shadow(radius: 1, y: 1)
+        .padding(.horizontal)
+    }
+
+    private func mpg(for exp: FuelExpense, totalGallons: Double) -> Double? {
+        guard let ctx = exp.managedObjectContext,
+              let car = exp.car,
+              let date = exp.date,
+              exp.mileage > 0,
+              totalGallons > 0 else { return nil }
+
+        let req: NSFetchRequest<FuelExpense> = FuelExpense.fetchRequest()
+        req.sortDescriptors = [NSSortDescriptor(key: "date", ascending: false)]
+        req.predicate = NSPredicate(format: "car == %@ AND date < %@", car, date as NSDate)
+        req.fetchLimit = 1
+
+        if let prev = try? ctx.fetch(req).first, let prev = prev, prev.mileage > 0 {
+            let miles = Double(exp.mileage - prev.mileage)
+            guard miles > 0 else { return nil }
+            return miles / totalGallons
+        }
+        return nil
+    }
+}
+
+
+// AddFuelExpenseView.swift
+import SwiftUI
+import CoreData
+import UniformTypeIdentifiers
+
+struct AddFuelExpenseView: View {
+    @Environment(\.managedObjectContext) private var ctx
+    @Environment(\.dismiss) private var dismiss
+
+    let car: Car
+
+    @State private var date = Date()
+    @State private var mileageText = ""
+    @State private var gallonsText = ""
+    @State private var unitPriceText = ""
+
+    private var gallonsDec: Decimal { Decimal(string: gallonsText.replacingOccurrences(of: ",", with: ".")) ?? .zero }
+    private var unitPriceDec: Decimal { Decimal(string: unitPriceText.replacingOccurrences(of: ",", with: ".")) ?? .zero }
+    private var totalDec: Decimal { gallonsDec * unitPriceDec }
+    private var totalText: String { totalDec.money }
+
+    private var isSaveDisabled: Bool {
+        (Int(mileageText) == nil) || gallonsDec <= 0 || unitPriceDec <= 0
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Fill-up Details") {
+                    DatePicker("Date", selection: $date, displayedComponents: .date)
+                    TextField("Odometer (mi)", text: $mileageText).keyboardType(.numberPad)
+                    TextField("Gallons", text: $gallonsText).keyboardType(.decimalPad)
+                    TextField("Price per Gallon", text: $unitPriceText).keyboardType(.decimalPad)
+
+                    HStack { Text("Total"); Spacer(); Text(totalText).bold() }
+                }
+            }
+            .navigationTitle("Add Fuel")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }.disabled(isSaveDisabled)
+                }
+            }
+        }
+    }
+
+    private func save() {
+        let e = FuelExpense(context: ctx)
+        e.id = UUID()
+        e.date = date
+        e.mileage = Int32(Int(mileageText) ?? 0)
+        e.gallons = NSDecimalNumber(decimal: gallonsDec)
+        e.unitPrice = NSDecimalNumber(decimal: unitPriceDec)
+        e.amount = NSDecimalNumber(decimal: totalDec)   // store total explicitly
+        e.isReimbursable = false
+        e.car = car
+
+        do {
+            try ctx.save()
+            dismiss()
+        } catch {
+            print("Failed to save FuelExpense: \(error)")
+        }
+    }
+}
+
