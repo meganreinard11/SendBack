@@ -1,0 +1,186 @@
+import SwiftUI
+
+struct CardItemView: View {
+    var title: String
+    var subtitle: String? = nil
+    var footnote: String? = nil
+    var avatarURL: URL? = nil
+    var systemImage: String = "car.fill"
+
+    // Avatar passthrough (kept)
+    var avatarSize: CGFloat = 44
+    var avatarShowBorder: Bool = false
+    var avatarBorderColor: Color = .gray.opacity((0.25))
+    var avatarBorderWidth: CGFloat = 1
+
+    var showsChevron: Bool = true
+    var isLoading: Bool = false
+    var onTap: (() -> Void)? = nil
+
+    var body: some View {
+        Card(onTap: onTap) {
+            HStack(spacing: 12) {
+                AvatarView(
+                    url: avatarURL,
+                    systemImage: systemImage,
+                    size: avatarSize,
+                    showBorder: avatarShowBorder,
+                    borderColor: avatarBorderColor,
+                    borderWidth: avatarBorderWidth
+                )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(title)
+                            .font(.headline)
+                            .lineLimit(1)
+                            .accessibilityAddTraits(.isHeader)
+
+                        Spacer(minLength: 8)
+                    }
+
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    if let footnote, !footnote.isEmpty {
+                        Text(footnote)
+                            .font(.footnote)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+
+                if showsChevron {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .redacted(reason: isLoading ? .placeholder : [])
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Demo / Usage
+
+struct CardItemDemoList: View {
+    struct DemoItem: Identifiable {
+        let id = UUID()
+        let title: String
+        let subtitle: String
+        let footnote: String
+        let avatar: URL?
+    }
+
+    @State private var items: [DemoItem] = [
+        .init(title: "2016 Honda Accord EX-L",
+              subtitle: "Next service: 10/15 • 64,500 mi",
+              footnote: "VIN ending • 1234",
+              avatar: URL(string: "https://images.pexels.com/photos/358070/pexels-photo-358070.jpeg"),
+              ),
+        .init(title: "2013 Honda CR-V",
+              subtitle: "Tire rotation due soon",
+              footnote: "VIN ending • 9876",
+              avatar: nil)
+    ]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(items) { item in
+                    CardItemView(
+                        title: item.title,
+                        subtitle: item.subtitle,
+                        footnote: item.footnote,
+                        avatarURL: item.avatar,
+                        systemImage: "car.fill",
+                        // Avatar pass-through examples:
+                        avatarShowBorder: true,
+                        avatarBorderColor: .accentColor,
+                        avatarBorderWidth: 1
+                    ) {
+                        // Handle tap
+                    }
+                    .listRowInsets(EdgeInsets())               // edge-to-edge card
+                    .listRowSeparator(.hidden)                 // hide default separator
+                    .listRowBackground(Color.clear)            // let card shadow show
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            withAnimation {
+                                if let idx = items.firstIndex(where: { $0.id == item.id }) {
+                                    items.remove(at: idx)
+                                }
+                            }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                    .swipeActions(edge: .leading) {
+                        Button {
+                            // Pin action
+                        } label: {
+                            Label("Pin", systemImage: "pin")
+                        }
+                        .tint(.yellow)
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .navigationTitle("My Garage")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        // Add new item
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Previews
+
+#Preview("CardItemView (Standalone)") {
+    VStack(spacing: 16) {
+        CardItemView(
+            title: "2016 Honda Accord EX-L",
+            subtitle: "Next service: 10/15 • 64,500 mi",
+            footnote: "VIN • 1HGCR2F83GA012345",
+            avatarURL: nil,
+            // Show an accent border on avatar for the primary item
+            avatarSize: 54,
+            avatarShowBorder: true,
+            avatarBorderColor: .red,
+            avatarBorderWidth: 2,
+            isLoading: false
+        )
+
+        CardItemView(
+            title: "Upload Receipt",
+            subtitle: "JPEG or PNG • up to 10 MB",
+            footnote: "",
+            avatarURL: nil,
+            systemImage: "doc.on.doc.fill",
+            // Larger avatar, subtle neutral ring
+            avatarSize: 56,
+            avatarShowBorder: true,
+            avatarBorderColor: .gray.opacity(0.25),
+            avatarBorderWidth: 2,
+            isLoading: false
+        )
+    }
+    .padding()
+    .background(Color(UIColor.systemGroupedBackground))
+}
+
+#Preview("CardItemView in List (Swipe)") {
+    CardItemDemoList()
+}
