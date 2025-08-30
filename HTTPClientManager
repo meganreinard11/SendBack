@@ -1,0 +1,87 @@
+// HTTPClientManager.swift
+import Foundation
+import AsyncHTTPClient
+import NIOCore
+import NIOFoundationCompat
+
+public final class HTTPClientManager {
+    public static let shared = HTTPClientManager()
+
+    public let client: HTTPClient
+
+    private init() {
+        var config = HTTPClient.Configuration()
+        config.timeout = .init(connect: .seconds(10), read: .seconds(15))
+        self.client = HTTPClient(eventLoopGroupProvider: .createNew, configuration: config)
+    }
+
+    deinit {
+        try? client.syncShutdown()
+    }
+}
+
+// Lightweight helpers to mimic your .GetJsonAsync/.PostJsonAsync/.GetHtmlAsync (:contentReference[oaicite:3]{index=3})
+public enum Http {
+    static func get(_ url: String,
+                    headers: HTTPHeaders = [:],
+                    timeout: TimeAmount = .seconds(10)) async throws -> String
+    {
+        let client = HTTPClientManager.shared.client
+        var request = try HTTPClient.Request(url: url, method: .GET, headers: headers)
+        let response = try await client.execute(request, timeout: timeout).get()
+        try ensureSuccess(response, url: url, type: "Get")
+        return try bodyString(response).cleanHtml()
+    }
+
+    static func getJSON(_ url: String,
+                        headers: HTTPHeaders = ["Accept": "application/json"],
+                        timeout: TimeAmount = .seconds(10)) async throws -> String
+    {
+        let client = HTTPClientManager.shared.client
+        var request = try HTTPClient.Request(url: url, method: .GET, headers: headers)
+        let response = try await client.execute(request, timeout: timeout).get()
+        try ensureSuccess(response, url: url, type: "Get")
+        return try bodyString(response).cleanJson()
+    }
+
+    static func postForm(_ url: String,
+                         form: [String: String],
+                         headers: HTTPHeaders = ["Content-Type": "application/x-www-form-urlencoded"],
+                         timeout: TimeAmount = .seconds(10)) async throws -> String
+    {
+        let client = HTTPClientManager.shared.client
+        let body = urlEncoded(form)
+        var request = try HTTPClient.Request(url: url,
+                                             method: .POST,
+                                             headers: headers,
+                                             body: .bytes(.init(string: body)))
+        let response = try await client.execute(request, timeout: timeout).get()
+        try ensureSuccess(response, url: url, type: "Post")
+        // Original code calls CleanJson for JSON POSTs and CleanHtml for HTML GETs (:contentReference[oaicite:4]{index=4})
+        return try bodyString(response).cleanJson()
+    }
+
+    // MARK: - Internals
+
+    private static func ensureSuccess(_ response: HTTPClient.Response, url: String, type: String) throws {
+        guard (200..<300).contains(response.status.code) else {
+            throw NSError(domain: "HTTP", code: Int(response.status.code),
+                          userInfo: [NSLocalizedDescriptionKey: "Status \(response.status.code): Async '\(type)' request to '\(url)' has failed"])
+        }
+    }
+
+    private static func bodyString(_ response: HTTPClient.Response) throws -> String {
+        guard var buffer = response.body else { return "" }
+        let data = buffer.readData(length: buffer.readableBytes) ?? Data()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private static func urlEncoded(_ form: [String: String]) -> String {
+        form.map { key, value in
+            let k = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? key
+            let v = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+            return "\(k)=\(v)"
+        }
+        .joined(separator: "&")
+    }
+}
