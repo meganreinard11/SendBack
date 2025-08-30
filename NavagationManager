@@ -52,12 +52,22 @@ final class NavigationManager: ObservableObject {
         path.append(.vinScanner)
     }
 
-    func goToAddCar(vin: String) {
-        path.append(.addCar(vin: vin))
+    func goToAddCar() {
+        goToAddCar(vin: "")
     }
 
-    func goToAddCar() {
-        path.append(.addCar(vin: ""))
+    // MARK: - Push
+    /// Ensure we never keep scanner in the back stack when moving to AddCar.
+    func goToAddCar(vin: String) {
+        let destination: AppRoute = .addCar(vin: vin)
+        if let last = path.last, case .vinScanner = last {
+            // Replace the scanner so there's no back button to it.
+            path[path.count - 1] = destination
+        } else {
+            // Clean up any stray scanner occurrences, then push.
+            stripScannerFromStack()
+            path.append(destination)
+        }
     }
 
     // MARK: - Replace (advance without back)
@@ -122,6 +132,15 @@ final class NavigationManager: ObservableObject {
     /// Convenience overload when no follow-up route is needed.
     func onCarAdded() {
         onCarAdded(push: nil)
+    }
+
+    // MARK: - Helpers
+    /// Remove any `.vinScanner` routes from the stack (top or deeper).
+    private func stripScannerFromStack() {
+        path.removeAll { route in
+            if case .vinScanner = route { return true }
+            return false
+        }
     }
 }
 
