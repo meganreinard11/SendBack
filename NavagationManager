@@ -1,0 +1,36 @@
+import SwiftUI
+
+/// Centralized router for programmatic navigation.
+@MainActor
+final class NavigationManager: ObservableObject {
+
+    /// The stack of routes for `NavigationStack`.
+    @Published var path: [AppRoute] = []
+
+    // MARK: - Push
+    func goToVinScanner() {
+        path.append(.vinScanner)
+    }
+
+    func goToAddCar(vin: String) {
+        path.append(.addCar(vin: vin))
+    }
+    
+    func goToAddCar() {
+        path.append(.addCar(vin: ""))
+    }
+
+    // MARK: - Pop
+    func back() {
+        _ = path.popLast()
+    }
+
+    func popToRoot() {
+        path.removeAll()
+    }
+
+    // MARK: - Shortcuts
+    func goToGarage() {
+        popToRoot()
+    }
+}
