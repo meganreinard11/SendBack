@@ -97,10 +97,52 @@ final class NavigationManager: ObservableObject {
         }
     }
 
-/// Convenience when you just want to land on the Garage with no extra route.
-func onFirstCarAdded() {
-    onFirstCarAdded(push: nil)
-}
+    /// Convenience when you just want to land on the Garage with no extra route.
+    func onFirstCarAdded() {
+        onFirstCarAdded(push: nil)
+    }
+
+    // MARK: - Post-add transition
+    /// Call after any successful car save.
+    /// - Parameters:
+    ///   - next: Optional route to show after saving (e.g., .carDetail(id: …)).
+    ///   - dropAddFlow: If true and you're currently on `.addCar`, the function replaces
+    ///                  that screen with `next` (or pops it) so there’s no back to Add Car.
+    func onCarAdded(push next: AppRoute? = nil, dropAddFlow: Bool = true) {
+        // If we started on Empty Garage, promote to Garage and clear any stack.
+        let wasEmptyRoot = (root == .emptyGarage)
+        if wasEmptyRoot {
+            path.removeAll()
+            root = .garage
+        }
+    
+        // If we want to get rid of the AddCar step in the back stack, do that first.
+        if dropAddFlow, let last = path.last, case .addCar = last {
+            if let next {
+                // Replace AddCar with the next destination so there's no back button to AddCar.
+                replaceTop(with: next)
+                return
+            } else {
+                // No next route—just drop AddCar and land where we are (likely Garage).
+                _ = path.popLast()
+                return
+            }
+        }
+    
+        // If not dropping the flow (or not on AddCar), just push any follow-up route.
+        if let next {
+            path.append(next)
+        } else if wasEmptyRoot {
+            // No next route needed; we already landed cleanly on Garage.
+            // (Intentionally a no-op.)
+        }
+    }
+    
+    /// Convenience overload when you just want to land on Garage with a clean stack.
+    func onCarAdded() {
+        onCarAdded(push: nil, dropAddFlow: true)
+    }
+
 
 }
 
