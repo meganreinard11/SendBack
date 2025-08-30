@@ -1,11 +1,51 @@
 import SwiftUI
 
-/// Centralized router for programmatic navigation.
+// Choose from your possible starting screens.
+enum RootRoute: Hashable, Codable {
+    case garage
+    case onboarding
+    case emptyGarage
+}
+
+/// Centralized router for programmatic navigation with a dynamic root.
 @MainActor
 final class NavigationManager: ObservableObject {
 
-    /// The stack of routes for `NavigationStack`.
+    // The root (initial) screen shown inside the NavigationStack.
+    @Published var root: RootRoute
+
+    // The stack of routes pushed on top of the root.
     @Published var path: [AppRoute] = []
+
+    // Inject the starting root (use your app logic to pick it at launch).
+    init(initialRoot: RootRoute = .garage) {
+        self.root = initialRoot
+    }
+
+    // MARK: - Root control (dynamic initial view)
+    /// Change the root screen; optionally clears the stack (defaults to true).
+    func setRoot(_ newRoot: RootRoute, resetPath: Bool = true) {
+        if resetPath { path.removeAll() }
+        root = newRoot
+    }
+
+    /// Advance to a new root and drop the back stack (no back button).
+    func advanceToRoot(_ newRoot: RootRoute) {
+        path.removeAll()
+        root = newRoot
+    }
+
+    /// Example policy hook to decide the initial root dynamically.
+    /// Call this once you know app state (e.g., after loading from storage).
+    func computeInitialRoot(hasCars: Bool, needsOnboarding: Bool) {
+        if needsOnboarding {
+            setRoot(.onboarding)
+        } else if hasCars {
+            setRoot(.garage)
+        } else {
+            setRoot(.emptyGarage)
+        }
+    }
 
     // MARK: - Push
     func goToVinScanner() {
@@ -15,9 +55,24 @@ final class NavigationManager: ObservableObject {
     func goToAddCar(vin: String) {
         path.append(.addCar(vin: vin))
     }
-    
+
     func goToAddCar() {
         path.append(.addCar(vin: ""))
+    }
+
+    // MARK: - Replace (advance without back)
+    /// Replace the current top route; if none, start with it.
+    func replaceTop(with route: AppRoute) {
+        if path.isEmpty {
+            path = [route]
+        } else {
+            path[path.count - 1] = route
+        }
+    }
+
+    /// Convenience: jump straight to AddCar and remove back navigation.
+    func advanceToAddCar(vin: String) {
+        replaceTop(with: .addCar(vin: vin))
     }
 
     // MARK: - Pop
@@ -31,6 +86,7 @@ final class NavigationManager: ObservableObject {
 
     // MARK: - Shortcuts
     func goToGarage() {
-        popToRoot()
+        setRoot(.garage)
     }
 }
+
