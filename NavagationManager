@@ -84,65 +84,44 @@ final class NavigationManager: ObservableObject {
         setRoot(.garage)
     }
 
-    // MARK: - Post-add transitions
-    /// Call this immediately after successfully adding the first car when the app had none.
-    /// If the current root is `.emptyGarage`, this switches the root to `.garage`, clears any transient stack, and (optionally) pushes a follow-up route.
-    /// If the root isn't `.emptyGarage`, it simply pushes the follow-up route (if provided).
-    func onFirstCarAdded(push next: AppRoute? = nil) {
+    // MARK: - Post-add transition
+    /// Call after any successful car save.
+    /// - Parameter next: Optional route to show after saving (e.g., .carDetail(id: …)).
+    /// Behavior:
+    /// 1) If root was `.emptyGarage`, promote to `.garage` and clear the stack.
+    /// 2) Always remove any `.addCar` step(s) from the back stack.
+    /// 3) If `next` is provided and we were on `.addCar`, it replaces that screen; otherwise it gets pushed on top of the current stack.
+    func onCarAdded(push next: AppRoute? = nil) {
+        // 1) Promote EmptyGarage → Garage when adding the very first car.
         if root == .emptyGarage {
             setRoot(.garage)
         }
-        if let next {
-            path.append(next)
-        }
-    }
-
-    /// Convenience when you just want to land on the Garage with no extra route.
-    func onFirstCarAdded() {
-        onFirstCarAdded(push: nil)
-    }
-
-    // MARK: - Post-add transition
-    /// Call after any successful car save.
-    /// - Parameters:
-    ///   - next: Optional route to show after saving (e.g., .carDetail(id: …)).
-    ///   - dropAddFlow: If true and you're currently on `.addCar`, the function replaces
-    ///                  that screen with `next` (or pops it) so there’s no back to Add Car.
-    func onCarAdded(push next: AppRoute? = nil, dropAddFlow: Bool = true) {
-        // If we started on Empty Garage, promote to Garage and clear any stack.
-        let wasEmptyRoot = (root == .emptyGarage)
-        if wasEmptyRoot {
-            path.removeAll()
-            root = .garage
-        }
-    
-        // If we want to get rid of the AddCar step in the back stack, do that first.
-        if dropAddFlow, let last = path.last, case .addCar = last {
+        // 2) If currently on AddCar, either replace it with `next` or pop it.
+        if let last = path.last, case .addCar = last {
             if let next {
-                // Replace AddCar with the next destination so there's no back button to AddCar.
-                replaceTop(with: next)
-                return
+                // Replace AddCar with the destination (no "back to Add Car")
+                replaceTop(next)
             } else {
-                // No next route—just drop AddCar and land where we are (likely Garage).
                 _ = path.popLast()
-                return
+            }
+        } else {
+            // Not currently on AddCar: remove any lingering AddCar steps from anywhere in the stack.
+            if path.contains(where: { if case .addCar = $0 { return true } else { return false } }) {
+                path.removeAll { route in
+                    if case .addCar = route { return true }
+                    return false
+                }
+            }
+            // Push follow-up if provided.
+            if let next {
+                path.append(next)
             }
         }
-    
-        // If not dropping the flow (or not on AddCar), just push any follow-up route.
-        if let next {
-            path.append(next)
-        } else if wasEmptyRoot {
-            // No next route needed; we already landed cleanly on Garage.
-            // (Intentionally a no-op.)
-        }
     }
     
-    /// Convenience overload when you just want to land on Garage with a clean stack.
+    /// Convenience overload when no follow-up route is needed.
     func onCarAdded() {
-        onCarAdded(push: nil, dropAddFlow: true)
+        onCarAdded(push: nil)
     }
-
-
 }
 
