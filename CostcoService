@@ -1,0 +1,99 @@
+// CostcoService.swift
+import Foundation
+import AsyncHTTPClient
+import NIOCore
+
+public protocol CostcoServiceProtocol {
+    func getBatteryPart(vin: String, zipCode: String, timeoutSeconds: Int) async throws -> PartModel?
+    func getClosestLocations(zipCode: String, latitude: Double, longitude: Double, timeoutSeconds: Int) async throws -> [ProviderModel]
+}
+
+public protocol PartTypeDatabase {
+    func getBatteryPartType() async throws -> PartTypeModel
+}
+
+public final class CostcoService: CostcoServiceProtocol {
+    private let db: PartTypeDatabase
+
+    public init(productTypeService: PartTypeDatabase) {
+        self.db = productTypeService
+    }
+
+    public func getBatteryPart(vin: String, zipCode: String, timeoutSeconds: Int = 10) async throws -> PartModel? {
+        let type = try await db.getBatteryPartType() // maps from your SQL SELECT Battery (:contentReference[oaicite:8]{index=8})
+        let data = try await requestBattery(vin: vin, zipCode: zipCode, timeoutSeconds: timeoutSeconds)
+
+        var part = PartModel()
+        part.name = "Battery"
+        part.specValue = data.between("group_number\": \"", "\"")
+        part.cost = data.between("warehouseprice\": \"", "\"").toDecimal()
+        part.typeId = type.id
+        part.type = type
+        return part
+    }
+
+    private func requestBattery(vin: String, zipCode: String, timeoutSeconds: Int) async throws -> String {
+        // POST to get options
+        let optionsJson = try await Http.postForm(
+            "https://costco.interstatebatteries.com/api/battery/GetVehicleOptionsByVin",
+            form: ["vin": vin],
+            timeout: .seconds(Int64(timeoutSeconds))
+        )
+
+        let applicationId = optionsJson.getJsonStr("ApplicationId")
+        let url = """
+        https://costco.interstatebatteries.com/results?key=auto&Program=100500&ZipCode=\(zipCode)&l=\(zipCode)&Country=United%20States&option=\(applicationId)
+        """
+        let html = try await Http.get(url, timeout: .seconds(Int64(timeoutSeconds)))
+        // Original extracts tbody (:contentReference[oaicite:9]{index=9})
+        return html.between("data-model", "</tbody>")
+    }
+
+    public func getClosestLocations(zipCode: String, latitude: Double, longitude: Double, timeoutSeconds: Int = 10) async throws -> [ProviderModel] {
+        // POST the form (mirrors original signature/values) (:contentReference[oaicite:10]{index=10})
+        let form: [String: String] = [
+            "latitude": String(latitude),
+            "longitude": String(longitude),
+            "datacount": "0",
+            "mtext": zipCode,
+            "IsSingleton": "0"
+        ]
+
+        let result = try await Http.postForm(
+            "https://tires.costco.com/SearchWarehouseAsync/GetWarehouseDataByLatLong?lang=en-us",
+            form: form,
+            timeout: .seconds(Int64(timeoutSeconds))
+        )
+
+        // Recreate the HTML/entity replacements and split (:contentReference[oaicite:11]{index=11})
+        let decoded = result
+            .replacingOccurrences(of: "\\u003c", with: "<")
+            .replacingOccurrences(of: "\\u003e", with: ">")
+            .replacingOccurrences(of: "\\u0026", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+
+        let blob = decoded.between("[{\"WarehouseId\":\"", "\"}]\" />")
+        let chunks = blob.split(separator: "{").map(String.init)
+
+        var providers: [ProviderModel] = []
+        for c in chunks {
+            let distance = c.between("Distance\":", ",").toDecimal()
+            if distance > 10 { break }
+
+            if c.contains("Tire Service Center") {
+                var p = ProviderModel()
+                p.brand = "Costco"
+                p.category = .store
+                p.name = c.getJsonStr("Name")
+                p.storeId = c.left(4)
+                let line1 = c.getJsonStr("Line1")
+                let city = c.getJsonStr("City")
+                let state = c.getJsonStr("Territory")
+                let postal = c.getJsonStr("PostalCode")
+                p.address = "\(line1)\n\(city), \(state) \(postal)"
+                providers.append(p)
+            }
+        }
+        return providers
+    }
+}
