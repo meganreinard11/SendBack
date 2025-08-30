@@ -24,20 +24,20 @@ final class NavigationManager: ObservableObject {
 
     // MARK: - Root control (dynamic initial view)
     /// Change the root screen; optionally clears the stack (defaults to true).
-    func setRoot(_ newRoot: RootRoute, resetPath: Bool = true) {
+    func resetRoot(_ newRoot: RootRoute, resetPath: Bool = true) {
         if resetPath { path.removeAll() }
         root = newRoot
     }
 
     /// Advance to a new root and drop the back stack (no back button).
-    func advanceToRoot(_ newRoot: RootRoute) {
+    func setRoot(_ newRoot: RootRoute) {
         path.removeAll()
         root = newRoot
     }
 
     /// Example policy hook to decide the initial root dynamically.
     /// Call this once you know app state (e.g., after loading from storage).
-    func computeInitialRoot(hasCars: Bool, needsOnboarding: Bool) {
+    func computeInitialRoot(needsOnboarding: Bool, hasCars: Bool) {
         if needsOnboarding {
             setRoot(.onboarding)
         } else if hasCars {
@@ -70,11 +70,6 @@ final class NavigationManager: ObservableObject {
         }
     }
 
-    /// Convenience: jump straight to AddCar and remove back navigation.
-    func advanceToAddCar(vin: String) {
-        replaceTop(with: .addCar(vin: vin))
-    }
-
     // MARK: - Pop
     func back() {
         _ = path.popLast()
@@ -88,5 +83,24 @@ final class NavigationManager: ObservableObject {
     func goToGarage() {
         setRoot(.garage)
     }
+
+    // MARK: - Post-add transitions
+    /// Call this immediately after successfully adding the first car when the app had none.
+    /// If the current root is `.emptyGarage`, this switches the root to `.garage`, clears any transient stack, and (optionally) pushes a follow-up route.
+    /// If the root isn't `.emptyGarage`, it simply pushes the follow-up route (if provided).
+    func onFirstCarAdded(push next: AppRoute? = nil) {
+        if root == .emptyGarage {
+            setRoot(.garage)
+        }
+        if let next {
+            path.append(next)
+        }
+    }
+
+/// Convenience when you just want to land on the Garage with no extra route.
+func onFirstCarAdded() {
+    onFirstCarAdded(push: nil)
+}
+
 }
 
