@@ -1,0 +1,80 @@
+// StringExtensions.swift
+import Foundation
+
+public extension String {
+    func toDecimal() -> Decimal {
+        let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "$", with: "")
+            .replacingOccurrences(of: ",", with: "")
+        return Decimal(string: trimmed) ?? 0
+    }
+
+    func toInt() -> Int {
+        let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "$", with: "")
+            .replacingOccurrences(of: ",", with: "")
+        return Int(trimmed) ?? 0
+    }
+
+    func left(_ length: Int) -> String {
+        if count <= length { return self }
+        return String(prefix(length))
+    }
+
+    func left(upTo ch: Character) -> String {
+        guard let idx = firstIndex(of: ch) else { return self }
+        return String(self[..<idx])
+    }
+
+    func left(upTo string: String) -> String {
+        guard let range = range(of: string) else { return self }
+        return String(self[..<range.lowerBound])
+    }
+
+    // Mirrors GetJsonStr/GetHtmlStr/Between from C# (:contentReference[oaicite:5]{index=5})
+    func getJsonStr(_ property: String) -> String {
+        between("\"\(property)\":\"", "\"")
+    }
+
+    func getHtmlStr(_ property: String) -> String {
+        between("\(property)\">", "<")
+    }
+
+    func between(_ before: String, _ after: String) -> String {
+        var startAt = startIndex
+        return between(before, after, startAt: &startAt)
+    }
+
+    func between(_ before: String, _ after: String, startAt: inout String.Index) -> String {
+        guard !isEmpty, !before.isEmpty, !after.isEmpty else { return "" }
+        guard let s = self.range(of: before, options: [], range: startAt..<endIndex)?.upperBound else { return "" }
+        guard let e = self.range(of: after, options: [], range: s..<endIndex)?.lowerBound else { return "" }
+        startAt = e
+        return String(self[s..<e])
+    }
+
+    // Cleaners (:contentReference[oaicite:6]{index=6})
+    func cleanHtml() -> String {
+        guard !isEmpty else { return "" }
+        var s = self
+        s = s.replacingOccurrences(of: "&nbsp;", with: " ")
+        // collapse multiple spaces
+        while s.contains("  ") { s = s.replacingOccurrences(of: "  ", with: " ") }
+        return s
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: #"</"#, with: "</")
+    }
+
+    func cleanJson() -> String {
+        guard !isEmpty else { return "" }
+        var s = self
+        // collapse multiple spaces
+        while s.contains("  ") { s = s.replacingOccurrences(of: "  ", with: " ") }
+        return s
+            .replacingOccurrences(of: #"\\\""#, with: #"\""#)
+            .replacingOccurrences(of: #"\\\\"#, with: #"\"#)
+    }
+}
