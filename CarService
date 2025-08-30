@@ -1,0 +1,172 @@
+import Foundation
+import AsyncHTTPClient
+import NIOCore
+
+public protocol CarServiceProtocol {
+    func lookup(car: inout CarModel,
+                zipCode: String,
+                costcoProvider: ProviderModel,
+                timeoutSeconds: Int) async -> Bool
+
+    func update(car: CarModel) async -> Bool
+}
+
+public final class CarService: CarServiceProtocol {
+    private let costco: CostcoServiceProtocol
+
+    public init(costco: CostcoServiceProtocol) {
+        self.costco = costco
+    }
+
+  public func lookup(car: inout CarModel, zipCode: String, costcoProvider: ProviderModel, timeoutSeconds: Int = 10) async -> Bool {
+      // Optional: global cap so the whole lookup never runs forever
+      let overallBudget = max(5, min(timeoutSeconds + 5, 30))
+      let childTimeout = Double(timeoutSeconds)
+      do {
+          enum Chunk {
+              case honda(String)
+              case manual(String)
+              case specs(String)
+              case battery(PartModel?)
+          }
+  
+          var hondaData: String?
+          var specData: String?
+          var manualData: String?
+  
+          try await withThrowingTaskGroup(of: Chunk.self) { group in
+              // 1) Start VIN lookup, manual, and Costco battery in parallel
+              group.addTask { .honda( try await withTimeout(seconds: childTimeout) {
+                  try await self.requestJson(
+                      r: 8, id: 99, pageUri: "find-honda",
+                      controller: "OwnGarage",
+                      method: "getProductByVIN",
+                      parameters: #"{"divisionId":"A","vin":"\#(car.vin.lowercased())","divisionName":"Honda"}"#,
+                      timeoutSeconds: timeoutSeconds
+                  )
+              })}
+  
+              group.addTask { .manual( try await withTimeout(seconds: childTimeout) {
+                  try await self.requestJson(
+                      r: 1, id: 87, pageUri: "owners-manuals",
+                      controller: "OwnManualsApi",
+                      method: "getManualByVINAuto",
+                      parameters: #"{"productIdentifier":"\#(car.vin)","divisionId":"A","division":"Honda"}"#,
+                      timeoutSeconds: timeoutSeconds
+                  )
+              })}
+  
+              group.addTask { .battery( try? await withTimeout(seconds: childTimeout) {
+                  try await self.costco.getBatteryPart(
+                      vin: car.vin, zipCode: zipCode, timeoutSeconds: timeoutSeconds
+                  )
+              })}
+  
+              // 2) Drain results; when VIN arrives, enqueue specs immediately
+              var enqueuedSpecs = false
+  
+              while let next = try await withTimeout(seconds: Double(overallBudget))({ try await group.next() }) {
+                  switch next {
+                  case .honda(let s):
+                      hondaData = s
+                      // kick off specs now that we have the modelId
+                      if !enqueuedSpecs {
+                          enqueuedSpecs = true
+                          let modelId = s.getJsonStr("modelId")
+                          group.addTask { .specs( try await withTimeout(seconds: childTimeout) {
+                              try await self.requestJson(
+                                  r: 16, id: 130, pageUri: "specifications",
+                                  controller: "OwnSpecifications",
+                                  method: "getAutoSpecificationsByModelId",
+                                  parameters: #"{"modelId":"\#(modelId)","divisionId":"A"}"#,
+                                  timeoutSeconds: timeoutSeconds
+                              )
+                          })}
+                      }
+  
+                  case .manual(let s):
+                      manualData = s
+                  case .specs(let s):
+                      specData = s
+                  case .battery:
+                      // battery is optional for success; nothing to do
+                      break
+                  }
+  
+                  // Exit early once required pieces are ready; cancel the rest
+                  if hondaData != nil, specData != nil, manualData != nil {
+                      group.cancelAll()
+                      break
+                  }
+              }
+          }
+  
+          // Require at least Honda + Specs; manual is nice-to-have but not mandatory
+          guard let hondaData, let specData else { return false }
+          let manualData = manualData ?? ""
+  
+          // ---- Parse & assign (unchanged from your previous logic) ----
+          var bodyStyle = ""
+          var model = hondaData.getJsonStr("modelGroupName")
+          let classes = ["Sedan", "Coupe", "Sport Utility"]
+          if let i = classes.firstIndex(where: { model.contains($0) }) {
+              bodyStyle = classes[i]
+              model = model.left(upTo: bodyStyle).trimmingCharacters(in: .whitespaces)
+          }
+  
+          let ownersManual = resolveOwnersManualUrl(manualData: manualData, model: model, bodyStyle: bodyStyle)
+          let mileageStr = specData.getHtmlStr("(City/Highway/Combined)")
+          let parts = mileageStr.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }
+          let city = parts.indices.contains(0) ? parts[0] : ""
+          let hwy  = parts.indices.contains(1) ? parts[1] : ""
+          let comb = parts.indices.contains(2) ? parts[2] : ""
+  
+          car.make = "Honda"
+          car.model = model
+          car.year = hondaData.getJsonStr("year")
+          car.trim = hondaData.getJsonStr("trim")
+              .replacingOccurrences(of: " w/Leather", with: "-L")
+              .left(upTo: " ")
+          car.name = "\(car.year) \(car.make) \(car.model) \(car.trim)"
+          car.bodyStyle = bodyStyle
+          car.modelId = hondaData.getJsonStr("modelId")
+          car.colorName = hondaData.getJsonStr("color\":{\"name")
+          car.colorCode = hondaData.getJsonStr("mfg_color_cd")
+          car.wheels = specData.getHtmlStr("Wheels")
+          car.tireSize = specData.getHtmlStr("All-Season Tires")
+          car.spareTireSize = specData.getHtmlStr("Compact Spare Tire")
+          car.ownersManual = ownersManual
+          car.fuelTank = specData.getHtmlStr("Fuel Tank Capacity")
+          car.fuelType = specData.getHtmlStr("Required Fuel")
+          car.mileageCity = String(city)
+          car.mileageHighway = String(hwy)
+          car.mileageCombined = String(comb)
+  
+          return true
+      } catch {
+          // On any thrown error or timeout, surface a clean failure and let callers decide UX
+          if Task.isCancelled { print("Lookup cancelled") }
+          else { print("Lookup failed: \(error.localizedDescription)") }
+          return false
+      }
+  }
+
+  private struct TimeoutError: LocalizedError {
+      var errorDescription: String? { "Operation timed out." }
+  }
+  
+  @inline(__always)
+  private func withTimeout<T>(seconds: Double,
+                              _ operation: @escaping () async throws -> T) async throws -> T {
+      try await withThrowingTaskGroup(of: T.self) { group in
+          group.addTask { try await operation() }
+          group.addTask {
+              try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+              throw TimeoutError()
+          }
+          let value = try await group.next()!   // first to finish wins
+          group.cancelAll()                     // cancel the loser
+          return value
+      }
+  }
+}
