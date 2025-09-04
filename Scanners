@@ -6,7 +6,6 @@ import VisionKit
 public enum TorchMode { case off, on, auto }
 
 // MARK: - VIN
-
 @available(iOS 17.0, *)
 public struct VinScanner: View {
     public var onMatch: (String) -> Void
@@ -14,7 +13,8 @@ public struct VinScanner: View {
     public var torch: TorchMode = .auto
     public var isValid: (String) -> Bool
 
-    // Public default so it can be referenced from a default argument.
+    @State private var showManualVinSheet = false
+
     public static func defaultVINValidator(_ s: String) -> Bool {
         let vin = s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard vin.count == 17 else { return false }
@@ -42,7 +42,13 @@ public struct VinScanner: View {
             onScanned: { vin in
                 onMatch(vin.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())
             },
-            onManualEntry: onManualEntry
+            onManualEntry: {
+                if let onManualEntry {
+                    onManualEntry()
+                } else {
+                    showManualVinSheet = true
+                }
+            }
         )
         .onAppear {
             switch torch {
@@ -51,11 +57,18 @@ public struct VinScanner: View {
             case .auto: break
             }
         }
+        .sheet(isPresented: $showManualVinSheet) {
+            VinManualEntrySheet(
+                isValid: isValid,
+                onSubmit: { vin in
+                    onMatch(vin)
+                }
+            )
+        }
     }
 }
 
 // MARK: - License Plate
-
 @available(iOS 17.0, *)
 public struct PlateScanner: View {
     public var onMatch: (String) -> Void
