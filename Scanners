@@ -1,0 +1,109 @@
+import SwiftUI
+import Vision
+import VisionKit
+
+@available(iOS 17.0, *)
+public enum TorchMode {
+    case off, on, auto
+}
+
+@available(iOS 17.0, *)
+private enum _ScanValidators {
+    static func isVIN(_ s: String) -> Bool {
+        let vin = s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard vin.count == 17 else { return false }
+        let disallowed = CharacterSet(charactersIn: "IOQ")
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        return vin.unicodeScalars.allSatisfy { allowed.contains($0) && !disallowed.contains($0) }
+    }
+    static func normalizePlate(_ s: String) -> String {
+        s.uppercased().replacingOccurrences(of: "-", with: "").replacingOccurrences(of: " ", with: "")
+    }
+    static func isPlausiblePlate(_ s: String) -> Bool {
+        let plate = normalizePlate(s)
+        // keep permissive; tighten per-state if you want
+        let regex = try! NSRegularExpression(pattern: #"^[A-Z0-9]{4,8}$"#)
+        return regex.firstMatch(in: plate, range: NSRange(plate.startIndex..., in: plate)) != nil
+    }
+}
+
+/// VIN barcode scanner with clear, minimal API.
+/// Internally uses `ScannerView(engine: .barcode(...))`.
+@available(iOS 17.0, *)
+public struct VinScanner: View {
+    public var onMatch: (String) -> Void
+    public var onManualEntry: (() -> Void)? = nil
+    public var torch: TorchMode = .auto
+    /// Override if you need custom VIN rules (defaults to ISO VIN check).
+    public var isValid: (String) -> Bool = _ScanValidators.isVIN
+
+    public init(
+        onMatch: @escaping (String) -> Void,
+        onManualEntry: (() -> Void)? = nil,
+        torch: TorchMode = .auto,
+        isValid: @escaping (String) -> Bool = _ScanValidators.isVIN
+    ) {
+        self.onMatch = onMatch
+        self.onManualEntry = onManualEntry
+        self.torch = torch
+        self.isValid = isValid
+    }
+
+    public var body: some View {
+        ScannerView(
+            engine: .barcode(symbologies: [.code39, .code39Checksum, .code128, .pdf417]),
+            validation: { candidate in isValid(candidate) },
+            onScanned: { vin in onMatch(vin.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()) },
+            onManualEntry: onManualEntry
+        )
+        .onAppear {
+            switch torch {
+            case .off: TorchController.shared.isOn = false
+            case .on:  TorchController.shared.isOn = true
+            case .auto: break // leave as-is
+            }
+        }
+    }
+}
+
+/// License-plate OCR scanner with plate-specific defaults.
+/// Internally uses `ScannerView(engine: .licensePlate)`.
+@available(iOS 17.0, *)
+public struct PlateScanner: View {
+    public var onMatch: (String) -> Void
+    public var onManualEntry: (() -> Void)? = nil
+    public var torch: TorchMode = .auto
+    /// Override if needed; we normalize before validating.
+    public var isValid: (String) -> Bool = _ScanValidators.isPlausiblePlate
+
+    public init(
+        onMatch: @escaping (String) -> Void,
+        onManualEntry: (() -> Void)? = nil,
+        torch: TorchMode = .auto,
+        isValid: @escaping (String) -> Bool = _ScanValidators.isPlausiblePlate
+    ) {
+        self.onMatch = onMatch
+        self.onManualEntry = onManualEntry
+        self.torch = torch
+        self.isValid = isValid
+    }
+
+    public var body: some View {
+        ScannerView(
+            engine: .licensePlate,
+            validation: { candidate in isValid(_ScanValidators.normalizePlate(candidate)) },
+            onScanned: { raw in
+                let plate = _ScanValidators.normalizePlate(raw)
+                onMatch(plate)
+            },
+            onManualEntry: onManualEntry
+        )
+        .onAppear {
+            switch torch {
+            case .off: TorchController.shared.isOn = false
+            case .on:  TorchController.shared.isOn = true
+            case .auto: break
+            }
+        }
+    }
+}
