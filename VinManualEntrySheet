@@ -1,0 +1,96 @@
+import SwiftUI
+
+@available(iOS 17.0, *)
+public struct VinManualEntrySheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    public var title: String = "Enter VIN Manually"
+    public var note: String = "VINs are 17 characters and do not use I, O, or Q."
+    public var isValid: (String) -> Bool
+    public var onSubmit: (String) -> Void
+    public var onCancel: (() -> Void)? = nil
+
+    @State private var vin: String
+    @FocusState private var focused: Bool
+
+    // MARK: - Init
+    public init(
+        initialVIN: String = "",
+        isValid: @escaping (String) -> Bool = VinScanner.defaultVINValidator,
+        onSubmit: @escaping (String) -> Void,
+        onCancel: (() -> Void)? = nil
+    ) {
+        self._vin = State(initialValue: Self.sanitize(initialVIN))
+        self.isValid = isValid
+        self.onSubmit = onSubmit
+        self.onCancel = onCancel
+    }
+
+    // MARK: - Body
+    public var body: some View {
+        NavigationStack {
+            Form {
+                Section(footer:
+                    Text(note)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                ) {
+                    TextField("1HGCM82633A004352", text: $vin)
+                        .textInputAutocapitalization(.characters)
+                        .keyboardType(.asciiCapable)
+                        .autocorrectionDisabled()
+                        .font(.system(.title3, design: .monospaced))
+                        .focused($focused)
+                        .onChange(of: vin) { _, newVal in
+                            let cleaned = Self.sanitize(newVal)
+                            if cleaned != newVal { vin = cleaned }
+                        }
+
+                    HStack {
+                        Text("Characters")
+                        Spacer()
+                        Text("\(vin.count)/17")
+                            .foregroundStyle(vin.count == 17 ? .secondary : .red)
+                            .monospacedDigit()
+                    }
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        onCancel?()
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        onSubmit(vin)
+                        dismiss()
+                    }
+                    .disabled(!isValid(vin))
+                }
+            }
+            .onAppear { focused = true }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    // MARK: - Helpers
+    private static func sanitize(_ s: String) -> String {
+        let upper = s.uppercased()
+        let filtered = upper.filter { ch in
+            if ch.isNumber { return true }
+            if ch.isLetter {
+                return ch != "I" && ch != "O" && ch != "Q"
+            }
+            return false
+        }
+        return String(filtered.prefix(17))
+    }
+}
+
+#Preview {
+    VinManualEntrySheet(onSubmit: { _ in })
+}
