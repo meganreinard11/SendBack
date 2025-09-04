@@ -1,0 +1,496 @@
+import SwiftUI
+import AVFoundation
+import Vision
+import VisionKit
+import Observation
+
+/// Reusable scanner with two engines:
+///  - .barcode (VisionKit DataScanner, ROI in *view* coords)
+///  - .licensePlate (your Core ML + Vision OCR, ROI in *Vision normalized* coords)
+public struct ScannerView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var nav: NavigationManager
+    
+    public enum Engine {
+        // Use Set for convenience; we convert to Array for VisionKit at the call site.
+        case barcode(symbologies: Set<VNBarcodeSymbology> = [.code39, .code39Checksum, .code128, .pdf417])
+        case licensePlate
+    }
+
+    // MARK: Public API
+    public var engine: Engine
+    public var title: String
+    public var subtitle: String?
+    public var noteText: String?
+    public var manualEntryTitle: String?
+    public var validation: (String) -> Bool
+    public var onScanned: (String) -> Void
+    public var onCancel: (() -> Void)?
+    public var onManualEntry: (() -> Void)?
+    
+   public init(
+        engine: Engine,
+        validation: @escaping (String) -> Bool = { _ in true },
+        onScanned: @escaping (String) -> Void,
+        onManualEntry: (() -> Void)? = nil
+    ) {
+        self.engine = engine
+        switch (engine) {
+        case .licensePlate:
+            self.title = "Scan License Plate"
+            self.subtitle = "Position license plate in frame"
+            self.noteText = "Note: For best results stand directly in front of the plate."
+            self.manualEntryTitle = "Enter License Plate Manually"
+        case .barcode:
+            self.title = "Scan VIN"
+            self.subtitle = "Position VIN barcode in frame"
+            self.noteText = "Note: You can locate a car's VIN on the driver's side interior dashboard (accessible through the windshield) or driver's side doorjamb. The VIN is also listed on a car's title, registration, and insurance documents."
+            self.manualEntryTitle = "Enter VIN Manually"
+        }
+        self.validation = validation
+        self.onScanned = onScanned
+        self.onManualEntry = onManualEntry
+    }
+
+    // MARK: State
+    @StateObject private var plateModel = VisionDetector()
+    @State private var fired = false
+    @State private var lastAppliedROI: CGRect = .zero
+    @State private var torchController = TorchController.shared
+    
+    // Basic VIN validator: 17 chars, excludes I/O/Q
+    private func isValidVIN(_ s: String) -> Bool {
+        let vin = s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard vin.count == 17 else { return false }
+        let disallowed = CharacterSet(charactersIn: "IOQ")
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        return vin.unicodeScalars.allSatisfy { allowed.contains($0) && !disallowed.contains($0) }
+    }
+    
+    private var isPreview: Bool {
+        ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
+    }
+    private var isSimulator: Bool {
+        #if targetEnvironment(simulator)
+        true
+        #else
+        false
+        #endif
+    }
+
+    public var body: some View {
+        @Bindable var torch = torchController
+        ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                Color.custom.translucent
+                Color.white
+                Color.white
+            }
+            engineLayer(torchIsOn: $torch.isOn)
+                .ignoresSafeArea()
+            ScannerChrome(
+                title: title,
+                subtitle: subtitle,
+                noteText: noteText,
+                manualEntryTitle: manualEntryTitle,
+                onManualEntry: onManualEntry
+            )
+        }
+        .toolbarRole(.editor)
+        .navigationBarBackButtonHidden(true)
+        .onAppear { fired = false }
+        // iOS 17 style: two-parameter closure (old, new)
+        .onChange(of: plateModel.recognizedText) { _, newValue in
+            guard case .licensePlate = engine, !fired else { return }
+            let candidate = newValue.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard !candidate.isEmpty, validation(candidate) else { return }
+            fired = true
+            onScanned(candidate)
+        }
+        .onDisappear {
+            torch.isOn = false
+            if case .licensePlate = engine {
+                plateModel.stop()
+            }
+        }
+    }
+
+    // MARK: Engine layer
+    private func engineLayer(torchIsOn: Binding<Bool>) -> some View {
+        GeometryReader { geo in
+            let insets = geo.safeAreaInsets
+            let viewSize = geo.size
+            // Scan window geometry (matches the mock)
+            let horizontalInset: CGFloat = 24
+            let windowHeight: CGFloat = 175
+            let topOffset: CGFloat = max(insets.top + 64, 95)
+            let windowRect = CGRect(
+                x: horizontalInset,
+                y: topOffset,
+                width: viewSize.width - horizontalInset * 2,
+                height: windowHeight
+            )
+            let cornerRadius: CGFloat = 10
+            ZStack {
+                switch engine {
+                case .licensePlate:
+                    if isPreview || isSimulator {
+                        // Safe preview backdrop with fake boxes (no camera/ML)
+                        PreviewBackdrop()
+                            .mask(
+                                RoundedRectangle(cornerRadius: cornerRadius)
+                                    .frame(width: windowRect.width, height: windowRect.height)
+                                    .position(x: windowRect.midX, y: windowRect.midY)
+                            )
+                        PreviewBoxesOverlay(rects: [
+                            CGRect(x: 0.12, y: 0.58, width: 0.76, height: 0.18),
+                            CGRect(x: 0.20, y: 0.30, width: 0.60, height: 0.14)
+                        ])
+                        .mask(
+                            RoundedRectangle(cornerRadius: cornerRadius)
+                                .frame(width: windowRect.width, height: windowRect.height)
+                                .position(x: windowRect.midX, y: windowRect.midY)
+                        )
+                    } else {
+                        // Live camera
+                        CameraPreview(session: plateModel.videoCapture.captureSession)
+                            .onAppear {
+                                plateModel.start()
+                                TorchController.shared.bind(session: plateModel.videoCapture.captureSession)
+                            }
+                        // Live detections clipped to window
+                        BoundingBoxesOverlay(predictions: plateModel.predictions)
+                            .mask(
+                                RoundedRectangle(cornerRadius: cornerRadius)
+                                    .frame(width: windowRect.width, height: windowRect.height)
+                                    .position(x: windowRect.midX, y: windowRect.midY)
+                            )
+                        // Apply Vision ROI when layout/pixel size changes
+                        Color.clear
+                            .onAppear { applyROI(viewSize: viewSize, windowRect: windowRect) }
+                            .onChange(of: plateModel.pixelSize) {
+                                applyROI(viewSize: viewSize, windowRect: windowRect)
+                            }
+                            .onChange(of: geo.size) {
+                                applyROI(viewSize: viewSize, windowRect: windowRect)
+                            }
+                    }
+
+                case .barcode(let syms):
+                    if isPreview || isSimulator {
+                        // Placeholder for previews/simulator
+                        BarcodePreviewPlaceholder()
+                            .frame(width: windowRect.width, height: windowRect.height)
+                            .position(x: windowRect.midX, y: windowRect.midY)
+                    } else {
+                        // VisionKit scanner; ROI is view-space rect
+                        DataScannerContainer(
+                            recognizedDataTypes: [.barcode(symbologies: Array(syms))], // Set -> [VNBarcodeSymbology]
+                            torchOn: torchIsOn,
+                            roiInViewSpace: windowRect,
+                            onScannedOnce: { s in
+                                let candidate = s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                                guard validation(candidate) else { return }
+                                onScanned(candidate)
+                            }
+                        )
+                    }
+                }
+                // Dim background and punch out scan window
+                ScannerCutoutMask(frame: windowRect, cornerRadius: cornerRadius)
+                    .allowsHitTesting(false)
+                // Window border + X + Torch
+                ScannerWindowChrome(
+                    windowRect: windowRect,
+                    cornerRadius: cornerRadius,
+                    isTorchOn: torchIsOn,
+                    toggleTorch: { torchIsOn.wrappedValue.toggle() }
+                )
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    // MARK: ROI mapping for Vision (license-plate engine)
+
+    private func applyROI(viewSize: CGSize, windowRect: CGRect) {
+        let imageSize = plateModel.pixelSize
+        guard imageSize.width > 0, imageSize.height > 0 else {
+            let naive = normalizeToVision(fromViewRect: windowRect, viewSize: viewSize)
+            if naive != lastAppliedROI {
+                plateModel.regionOfInterest = naive
+                lastAppliedROI = naive
+            }
+            return
+        }
+        let roi = mapViewRectToVisionROI(viewSize: viewSize, imageSize: imageSize, windowRect: windowRect)
+        if roi != lastAppliedROI {
+            plateModel.regionOfInterest = roi
+            lastAppliedROI = roi
+        }
+    }
+
+    private func normalizeToVision(fromViewRect rect: CGRect, viewSize: CGSize) -> CGRect {
+        guard viewSize.width > 0, viewSize.height > 0 else {
+            return CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+        return CGRect(
+            x: clamp01(rect.minX / viewSize.width),
+            y: clamp01(1 - ((rect.minY + rect.height) / viewSize.height)), // bottom-left origin
+            width: clamp01(rect.width / viewSize.width),
+            height: clamp01(rect.height / viewSize.height)
+        )
+    }
+
+    private func mapViewRectToVisionROI(viewSize: CGSize, imageSize: CGSize, windowRect: CGRect) -> CGRect {
+        // keep 'scale' once to avoid recomputing the max several times
+        let scale = max(viewSize.width / imageSize.width, viewSize.height / imageSize.height)
+        return CGRect(
+            x: clamp01(
+                (windowRect.minX - (viewSize.width - imageSize.width * scale) / 2) /
+                (imageSize.width * scale)
+            ),
+            y: clamp01(
+                1 - (
+                    (windowRect.minY - (viewSize.height - imageSize.height * scale) / 2) /
+                    (imageSize.height * scale)
+                    + windowRect.height / (imageSize.height * scale)
+                )
+            ),
+            width: clamp01(windowRect.width / (imageSize.width * scale)),
+            height: clamp01(windowRect.height / (imageSize.height * scale))
+        )
+    }
+
+    private func clamp01<T: BinaryFloatingPoint>(_ v: T) -> T { min(max(0, v), 1) }
+}
+
+// MARK: - Chrome (shared UI)
+
+private struct ScannerChrome: View {
+    @EnvironmentObject private var nav: NavigationManager
+    
+    var title: String
+    var subtitle: String?
+    var noteText: String?
+    var manualEntryTitle: String?
+    var onManualEntry: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Spacer(minLength: 260)
+            Text(title)
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .foregroundStyle(.black)
+                .multilineTextAlignment(.center)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.title3.weight(.regular))
+                    .foregroundStyle(.black)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
+            if let noteText {
+                Text(noteText)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.custom.lightGray))
+                    .padding(.horizontal, 16)
+            }
+            Spacer()
+            if let manualEntryTitle {
+                Button(manualEntryTitle) { nav.goToAddCar() }
+                    .font(.headline)
+                    .foregroundStyle(.blue)
+                    .padding(.bottom, 28)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct ScannerWindowChrome: View {
+    @EnvironmentObject private var nav: NavigationManager
+    
+    let windowRect: CGRect
+    let cornerRadius: CGFloat
+    @Binding var isTorchOn: Bool
+    var toggleTorch: () -> Void
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .stroke(.black.opacity(0.25), lineWidth: 1)
+                .background(RoundedRectangle(cornerRadius: cornerRadius).fill(.black.opacity(0.10)))
+                .frame(width: windowRect.width, height: windowRect.height)
+                .position(x: windowRect.midX, y: windowRect.midY)
+            Button { nav.back() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(.white)
+                    .frame(width: 32, height: 32)
+            }
+            .position(x: windowRect.minX + 12, y: windowRect.minY + 8)
+            Button { toggleTorch() } label: {
+                Image(systemName: "flashlight.on.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .frame(width: 50, height: 50)
+                    .background(.white)
+                    .clipShape(Circle())
+                    .shadow(radius: 10, y: 4)
+            }
+            .position(x: windowRect.maxX - 30, y: windowRect.maxY + 50 - 10)
+            .accessibilityLabel(isTorchOn ? "Turn torch off" : "Turn torch on")
+        }
+    }
+}
+
+private struct ScannerCutoutMask: View {
+    let frame: CGRect
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        GeometryReader { geo in
+            let full = CGRect(origin: .zero, size: geo.size)
+            Path { p in
+                p.addRect(full)
+                p.addRoundedRect(in: frame, cornerSize: .init(width: cornerRadius, height: cornerRadius))
+            }
+            .fill(.black.opacity(0), style: .init(eoFill: true, antialiased: true))
+            .ignoresSafeArea()
+        }
+    }
+}
+
+// MARK: - VisionKit container (device only) with ROI in view coordinates
+private struct DataScannerContainer: UIViewControllerRepresentable {
+    typealias UIViewControllerType = DataScannerViewController
+
+    var recognizedDataTypes: Set<DataScannerViewController.RecognizedDataType>
+    @Binding var torchOn: Bool  // UI state only; TorchController flips hardware elsewhere
+    var roiInViewSpace: CGRect
+    var onScannedOnce: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onScannedOnce: onScannedOnce) }
+
+    func makeUIViewController(context: Context) -> DataScannerViewController {
+        let vc = DataScannerViewController(
+            recognizedDataTypes: recognizedDataTypes,
+            qualityLevel: .accurate,
+            recognizesMultipleItems: false,
+            isPinchToZoomEnabled: true,
+            isHighlightingEnabled: true
+        )
+        vc.delegate = context.coordinator
+        DispatchQueue.main.async { try? vc.startScanning() }
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: DataScannerViewController, context: Context) {
+        uiViewController.regionOfInterest = roiInViewSpace
+        // No direct torch API on DataScannerViewController (we use TorchController elsewhere).
+    }
+
+    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        let onScannedOnce: (String) -> Void
+        init(onScannedOnce: @escaping (String) -> Void) { self.onScannedOnce = onScannedOnce }
+
+        func dataScanner(_ dataScanner: DataScannerViewController, didAdd items: [RecognizedItem],
+                         allItems: [RecognizedItem]) {
+            for item in items {
+                switch item {
+                case .barcode(let code):
+                    if let payload = code.payloadStringValue { onScannedOnce(payload) }
+                case .text(let text):
+                    onScannedOnce(text.transcript)
+                @unknown default: break
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Preview-safe placeholders
+
+/// A soft gradient “camera” backdrop for previews.
+private struct PreviewBackdrop: View {
+    var body: some View {
+        LinearGradient(
+            colors: [Color.black.opacity(0.9), Color.gray.opacity(0.6)],
+            startPoint: .topLeading, endPoint: .bottomTrailing
+        )
+        .overlay(
+            Image(systemName: "camera.viewfinder")
+                .font(.system(size: 80, weight: .light))
+                .foregroundStyle(.white.opacity(0.25))
+        )
+    }
+}
+
+/// Simple overlay that draws normalized rects (0...1) without Vision types.
+private struct PreviewBoxesOverlay: View {
+    let rects: [CGRect]
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                ForEach(Array(rects.enumerated()), id: \.offset) { _, r in
+                    let rr = toViewRect(r, in: geo.size)
+                    Rectangle()
+                        .stroke(.green, lineWidth: 3)
+                        .frame(width: rr.width, height: rr.height)
+                        .position(x: rr.midX, y: rr.midY)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func toViewRect(_ bbox: CGRect, in size: CGSize) -> CGRect {
+        // bbox is normalized Vision coords (origin bottom-left)
+        let w = bbox.width * size.width
+        let h = bbox.height * size.height
+        let x = bbox.origin.x * size.width
+        let y = (1 - bbox.origin.y - bbox.height) * size.height
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+}
+
+/// Placeholder for the barcode engine in previews/simulator.
+private struct BarcodePreviewPlaceholder: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 22)
+                .fill(.black.opacity(0.08))
+            VStack(spacing: 12) {
+                Image(systemName: "barcode.viewfinder")
+                    .font(.system(size: 48, weight: .regular))
+                    .foregroundStyle(.secondary)
+                Text("Barcode Scanner Preview")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: - Xcode Previews
+
+#Preview("Barcode Engine") {
+    ScannerView(
+        engine: .barcode(),
+        onScanned: { _ in }
+    )
+    .preferredColorScheme(.dark)
+}
+
+#Preview("License Plate Engine") {
+    ScannerView(
+        engine: .licensePlate,
+        onScanned: { _ in }
+    )
+    .preferredColorScheme(.dark)
+}
