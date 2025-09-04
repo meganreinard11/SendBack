@@ -1,0 +1,67 @@
+import SwiftUI
+import PermissionsSwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject private var nav: NavigationManager
+    @Environment(\.managedObjectContext) private var ctx
+    
+    @State private var showPermissions: Bool
+
+    @State var showModal = true
+    
+    init(showPermissions: Bool = false) {
+        self.showPermissions = showPermissions
+    }
+    
+    var body: some View {
+        NavigationStack(path: $nav.path) {
+            initialView
+            .navigationDestination(for: AppRoute.self) { route in
+                switch route {
+                case .vinScanner:
+                   ScannerView(engine: .barcode(), validation: isValidVIN(_:), onScanned: { vin in nav.goToAddCar(vin: vin) }, onManualEntry: { nav.goToAddCar() } )
+                case .plateScanner:
+                    ScannerView(engine: .licensePlate, validation: isValidPlate(_:), onScanned: { plate in nav.onPlateScanned(plate) }, onManualEntry: { nav.back() } )
+                case .addCar(let vin):
+                    AddCarView(vin: vin)
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var initialView: some View {
+        if !showPermissions {
+            GarageView()
+        } else {
+            OnboardingView()
+                .JMAlert(showModal: $showModal, for: [.bluetooth, .calendarFull, .camera, .locationAlways, .notification, .remindersFull])
+        }
+    }
+
+// Basic VIN validator: 17 chars, excludes I/O/Q
+    private func isValidVIN(_ s: String) -> Bool {
+        let vin = s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard vin.count == 17 else { return false }
+        let disallowed = CharacterSet(charactersIn: "IOQ")
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        return vin.unicodeScalars.allSatisfy { allowed.contains($0) && !disallowed.contains($0) }
+    }
+    
+    private func isValidPlate(_ s: String) -> Bool {
+        let plate = s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard plate.count >= 2 else { return false }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ")
+        return plate.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+}
+
+#Preview {
+    let nav = NavigationManager()
+    let pc  = PersistenceController.preview
+    return ContentView(showPermissions: false)
+        .environmentObject(nav)
+        .environment(\.nav, nav)
+        .environment(\.managedObjectContext, pc.container.viewContext)
+}
