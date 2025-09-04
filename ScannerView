@@ -25,14 +25,15 @@ public struct ScannerView: View {
     public var manualEntryTitle: String?
     public var validation: (String) -> Bool
     public var onScanned: (String) -> Void
-    public var onCancel: (() -> Void)?
-    public var onManualEntry: (() -> Void)?
+    public var onCancel: (() -> Void)?             // used by the close (X) button
+    public var onManualEntry: (() -> Void)?        // invoked by the manual entry button
     
-   public init(
+    public init(
         engine: Engine,
         validation: @escaping (String) -> Bool = { _ in true },
         onScanned: @escaping (String) -> Void,
-        onManualEntry: (() -> Void)? = nil
+        onManualEntry: (() -> Void)? = nil,
+        onCancel: (() -> Void)? = nil
     ) {
         self.engine = engine
         switch (engine) {
@@ -50,6 +51,7 @@ public struct ScannerView: View {
         self.validation = validation
         self.onScanned = onScanned
         self.onManualEntry = onManualEntry
+        self.onCancel = onCancel
     }
 
     // MARK: State
@@ -204,7 +206,8 @@ public struct ScannerView: View {
                     windowRect: windowRect,
                     cornerRadius: cornerRadius,
                     isTorchOn: torchIsOn,
-                    toggleTorch: { torchIsOn.wrappedValue.toggle() }
+                    toggleTorch: { torchIsOn.wrappedValue.toggle() },
+                    onClose: onCancel                         // NEW: bubble cancel up, then nav.back()
                 )
             }
             .ignoresSafeArea()
@@ -274,7 +277,7 @@ private struct ScannerChrome: View {
     var subtitle: String?
     var noteText: String?
     var manualEntryTitle: String?
-    var onManualEntry: (() -> Void)?
+    var onManualEntry: (() -> Void)?      // NEW: honor closure
 
     var body: some View {
         VStack(spacing: 16) {
@@ -301,10 +304,13 @@ private struct ScannerChrome: View {
             }
             Spacer()
             if let manualEntryTitle {
-                Button(manualEntryTitle) { nav.goToAddCar() }
-                    .font(.headline)
-                    .foregroundStyle(.blue)
-                    .padding(.bottom, 28)
+                Button(manualEntryTitle) {
+                    if let onManualEntry { onManualEntry() }
+                    else { nav.goToAddCar() } // fallback to old behavior
+                }
+                .font(.headline)
+                .foregroundStyle(.blue)
+                .padding(.bottom, 28)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -318,6 +324,7 @@ private struct ScannerWindowChrome: View {
     let cornerRadius: CGFloat
     @Binding var isTorchOn: Bool
     var toggleTorch: () -> Void
+    var onClose: (() -> Void)? = nil          // NEW: notify parent of cancel
 
     var body: some View {
         ZStack {
@@ -326,7 +333,10 @@ private struct ScannerWindowChrome: View {
                 .background(RoundedRectangle(cornerRadius: cornerRadius).fill(.black.opacity(0.10)))
                 .frame(width: windowRect.width, height: windowRect.height)
                 .position(x: windowRect.midX, y: windowRect.midY)
-            Button { nav.back() } label: {
+            Button {
+                onClose?()                    // bubble up cancel
+                nav.back()                    // and then navigate back
+            } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 22, weight: .regular))
                     .foregroundStyle(.white)
